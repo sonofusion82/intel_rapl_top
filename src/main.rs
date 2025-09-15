@@ -1,11 +1,62 @@
 use std::fs::File;
-use std::io::Read;
+use std::io::{self, Read};
+use std::path::PathBuf;
 use std::thread::sleep;
 
-fn main() {
-    let base_path = std::path::Path::new("/sys/class/powercap/intel-rapl/");
+const RAPL_BASE_PATH: &str = "/sys/class/powercap/intel-rapl/";
+const UPDATE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
 
-    let entries = std::fs::read_dir(base_path).unwrap()
+struct IntelRapl {
+    name: String,
+    path: PathBuf,
+    last_energy: u64,
+    last_time: std::time::Instant
+}
+
+impl IntelRapl {
+    fn new(path: PathBuf) -> Result<Self, io::Error> {
+        let name = Self::read_name(&path)?;
+        Ok(Self {
+            name,
+            path,
+            last_energy: 0,
+            last_time: std::time::Instant::now(),
+        })
+    }
+
+    fn read_name(path: &std::path::Path) -> Result<String, io::Error> {
+        let mut rapl_name = String::new();
+        File::open(path.join("name"))?.read_to_string(&mut rapl_name)?;
+        Ok(rapl_name.trim().into())
+    }
+
+    fn read_energy(&self) -> Result<(u64, std::time::Instant), io::Error> {
+        let mut energy_uj_string = String::new();
+        File::open(self.path.join("energy_uj"))?.read_to_string(&mut energy_uj_string)?;
+        Ok((energy_uj_string.trim().parse::<u64>().unwrap(),
+            std::time::Instant::now()))
+    }
+
+    fn read_power(&mut self) -> Result<f64, io::Error> {
+        let (energy_uj, updated_time) = self.read_energy()?;
+        let delta_energy = if energy_uj >= self.last_energy {
+            energy_uj - self.last_energy
+        } else {
+            0
+        };
+        let delta_time = (updated_time - self.last_time).as_secs_f64();
+        let power = (delta_energy as f64) / delta_time * 1e-6; // in watts
+
+        self.last_energy = energy_uj;
+        self.last_time = updated_time;
+        Ok(power)
+    }
+}
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let base_path = std::path::Path::new(RAPL_BASE_PATH);
+
+    let mut entries = std::fs::read_dir(base_path)?
         .map(|res| res.unwrap().path())
         .filter(|path| {
             let name_file = path.join("name");
@@ -16,53 +67,27 @@ fn main() {
                 name_file.exists() &&
                 energy_file.exists()
         })
-        .collect::<Vec<_>>();
+        .map(IntelRapl::new)
+        .collect::<Result<Vec<_>,_>>()?;
 
     if entries.len() == 0 {
-        println!("Error: No intel-rapl domains found");
-        return;
+        eprintln!("Error: No intel-rapl domains found");
+        return Err("No intel-rapl domains found".into());
     }
-
-    let rapl_names = entries.iter().map(|path| {
-        let name_path = path.join("name");
-        let mut name_file = File::open(name_path).unwrap();
-        let mut name_string = String::new();
-        name_file.read_to_string(&mut name_string).unwrap();
-        name_string.trim().to_string()
-    }).collect::<Vec<_>>();
-
-    let mut last_energies = vec![0u64; entries.len()];
-    let mut last_time = vec![std::time::Instant::now(); entries.len()]; 
 
     loop {
         let mut printed_line = 0;
 
-        for i in 0.. entries.len() {
-            let energy_path = entries[i].join("energy_uj");
-            let mut energy_file = File::open(energy_path).unwrap();
-            let mut energy_string = String::new();
-            energy_file.read_to_string(&mut energy_string).unwrap();
-            let now = std::time::Instant::now();
-
-            let energy_uj = energy_string.trim().parse::<u64>().unwrap();
-            if last_energies[i] > 0 {
-                let delta_energy = if energy_uj >= last_energies[i] {
-                    energy_uj - last_energies[i]
-                } else {
-                    0
-                };
-                let delta_time = (now - last_time[i]).as_secs_f64();
-                let power = (delta_energy as f64) / delta_time * 1e-6; // in watts
-                println!("Domain {} Power: {:.3} W        ", rapl_names[i], power);
+        for entry in &mut entries {
+            if let Ok(power)= entry.read_power() {
+                println!("Domain: {:8} Power: {:8.3} W        ", entry.name, power);
                 printed_line += 1;
             }
-            last_energies[i] = energy_uj;
-            last_time[i] = now;
         }
 
-        sleep(std::time::Duration::from_secs(1));
-        let cursor_return = String::from("\r") + &"\x1b[A".repeat(printed_line);
-        print!("{}", cursor_return)
+        sleep(UPDATE_INTERVAL);
+        let cursor_return = "\x1b[A".repeat(printed_line);
+        print!("{}\r", cursor_return);
     }
 
 }
