@@ -1,5 +1,5 @@
-use std::fs::File;
-use std::io::{self, Read};
+use std::fs::read_to_string;
+use std::io;
 use std::path::PathBuf;
 use std::thread::sleep;
 
@@ -10,29 +10,35 @@ struct IntelRapl {
     name: String,
     path: PathBuf,
     last_energy: u64,
-    last_time: std::time::Instant
+    max_energy_range_uj: u64,
+    last_time: std::time::Instant,
 }
 
 impl IntelRapl {
     fn new(path: PathBuf) -> Result<Self, io::Error> {
         let name = Self::read_name(&path)?;
+        let max_energy_range_uj = Self::read_max_energy_range_uj(&path)?;
         Ok(Self {
             name,
             path,
             last_energy: 0,
+            max_energy_range_uj,
             last_time: std::time::Instant::now(),
         })
     }
 
     fn read_name(path: &std::path::Path) -> Result<String, io::Error> {
-        let mut rapl_name = String::new();
-        File::open(path.join("name"))?.read_to_string(&mut rapl_name)?;
+        let rapl_name = read_to_string(path.join("name"))?;
         Ok(rapl_name.trim().into())
     }
 
+    fn read_max_energy_range_uj(path: &std::path::Path) -> Result<u64, io::Error> {
+        let max_energy_range_uj_string = read_to_string(path.join("max_energy_range_uj"))?;
+        Ok(max_energy_range_uj_string.trim().parse::<u64>().unwrap())
+    }
+
     fn read_energy(&self) -> Result<(u64, std::time::Instant), io::Error> {
-        let mut energy_uj_string = String::new();
-        File::open(self.path.join("energy_uj"))?.read_to_string(&mut energy_uj_string)?;
+        let energy_uj_string = read_to_string(self.path.join("energy_uj"))?;
         Ok((energy_uj_string.trim().parse::<u64>().unwrap(),
             std::time::Instant::now()))
     }
@@ -41,9 +47,13 @@ impl IntelRapl {
         let (energy_uj, updated_time) = self.read_energy()?;
         let delta_energy = if energy_uj >= self.last_energy {
             energy_uj - self.last_energy
+        } else if self.max_energy_range_uj >= self.last_energy {
+            // overflow condition, calculate wrap around with max_energy_range_uj
+            energy_uj % self.max_energy_range_uj
         } else {
             0
         };
+
         let delta_time = (updated_time - self.last_time).as_secs_f64();
         let power = (delta_energy as f64) / delta_time * 1e-6; // in watts
 
@@ -55,6 +65,10 @@ impl IntelRapl {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let base_path = std::path::Path::new(RAPL_BASE_PATH);
+    if !base_path.exists() {
+        let err_msg = format!("{} not found", base_path.display());
+        return Err(err_msg.into())
+    }
 
     let mut entries = std::fs::read_dir(base_path)?
         .map(|res| res.unwrap().path())
@@ -86,8 +100,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         sleep(UPDATE_INTERVAL);
-        let cursor_return = "\x1b[A".repeat(printed_line);
-        print!("{}\r", cursor_return);
+        let cursor_up = "\x1b[A".repeat(printed_line);
+        print!("{}\r", cursor_up);
     }
 
 }
