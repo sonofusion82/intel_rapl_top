@@ -12,18 +12,23 @@ struct IntelRapl {
     last_energy: u64,
     max_energy_range_uj: u64,
     last_time: std::time::Instant,
+    cumulative_energy_uj: u64,
+    cumulative_energy_start_time: std::time::Instant,
 }
 
 impl IntelRapl {
     fn new(path: PathBuf) -> Result<Self, io::Error> {
         let name = Self::read_name(&path)?;
         let max_energy_range_uj = Self::read_max_energy_range_uj(&path)?;
+        let now = std::time::Instant::now();
         Ok(Self {
             name,
             path,
             last_energy: 0,
             max_energy_range_uj,
-            last_time: std::time::Instant::now(),
+            last_time: now,
+            cumulative_energy_uj: 0,
+            cumulative_energy_start_time: now,
         })
     }
 
@@ -39,8 +44,8 @@ impl IntelRapl {
 
     fn read_energy(&self) -> Result<(u64, std::time::Instant), io::Error> {
         let energy_uj_string = read_to_string(self.path.join("energy_uj"))?;
-        Ok((energy_uj_string.trim().parse::<u64>().unwrap(),
-            std::time::Instant::now()))
+        let energy_uj = energy_uj_string.trim().parse::<u64>().unwrap();
+        Ok((energy_uj, std::time::Instant::now()))
     }
 
     fn read_power(&mut self) -> Result<f64, io::Error> {
@@ -50,6 +55,7 @@ impl IntelRapl {
         }
 
         let delta_energy =  if self.last_energy <= 0 {
+            self.cumulative_energy_start_time = updated_time;
             0u64
         } else {
             if energy_uj >= self.last_energy {
@@ -63,9 +69,19 @@ impl IntelRapl {
         let power = (delta_energy as f64) / delta_time * 1e-6; // in watts
         //println!("{}: {} μJ / {} s", self.name, delta_energy, delta_time);
 
+        self.cumulative_energy_uj += delta_energy;
         self.last_energy = energy_uj;
         self.last_time = updated_time;
         Ok(power)
+    }
+
+    fn average_power(&self) -> f64 {
+        let total_time = self.last_time - self.cumulative_energy_start_time;
+        self.cumulative_energy_uj as f64 / total_time.as_secs_f64() * 1e-6
+    }
+
+    fn cumulative_energy_wh(&self) -> f64 {
+        self.cumulative_energy_uj as f64 * 1e-6 / 3600.0
     }
 }
 
@@ -97,13 +113,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     loop {
         // Print table header
-        println!("{:<20} {:>10}", "Domain", "Power (W)");
-        println!("{:-<31}", "");
+        println!("{:<20} {:>10} {:>11} {:>11}", "Domain", "Power (W)", "Energy (Wh)", "Avg Pwr (W)");
+        println!("{:-<55}", "");
 
         let mut printed_line = 0;
         for entry in &mut entries {
             if let Ok(power) = entry.read_power() {
-                println!("{:<20} {:>10.3}", entry.name, power);
+                println!("{:<20} {:>10.3} {:>11.3} {:>11.3}", entry.name, power, entry.cumulative_energy_wh(), entry.average_power());
                 printed_line += 1;
             }
         }
