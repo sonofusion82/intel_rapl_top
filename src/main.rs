@@ -1,9 +1,9 @@
 use std::fs::read_to_string;
-use std::io;
+use std::io::{self, Error};
 use std::path::PathBuf;
 use std::thread::sleep;
 
-const RAPL_BASE_PATH: &str = "/sys/class/powercap/intel-rapl/";
+const RAPL_BASE_PATH: &str = "/sys/class/powercap/";
 const UPDATE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
 
 struct IntelRapl {
@@ -45,17 +45,23 @@ impl IntelRapl {
 
     fn read_power(&mut self) -> Result<f64, io::Error> {
         let (energy_uj, updated_time) = self.read_energy()?;
-        let delta_energy = if energy_uj >= self.last_energy {
-            energy_uj - self.last_energy
-        } else if self.max_energy_range_uj >= self.last_energy {
-            // overflow condition, calculate wrap around with max_energy_range_uj
-            energy_uj % self.max_energy_range_uj
+        if energy_uj > self.max_energy_range_uj {
+            return Err(io::Error::new(io::ErrorKind::Other, "energy_uj value out of range"));
+        }
+
+        let delta_energy =  if self.last_energy <= 0 {
+            0u64
         } else {
-            0
+            if energy_uj >= self.last_energy {
+                energy_uj - self.last_energy
+            } else {
+                energy_uj + (self.max_energy_range_uj - self.last_energy)
+            }
         };
 
         let delta_time = (updated_time - self.last_time).as_secs_f64();
         let power = (delta_energy as f64) / delta_time * 1e-6; // in watts
+        //println!("{}: {} μJ / {} s", self.name, delta_energy, delta_time);
 
         self.last_energy = energy_uj;
         self.last_time = updated_time;
@@ -90,17 +96,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     loop {
-        let mut printed_line = 0;
+        // Print table header
+        println!("{:<20} {:>10}", "Domain", "Power (W)");
+        println!("{:-<31}", "");
 
+        let mut printed_line = 0;
         for entry in &mut entries {
-            if let Ok(power)= entry.read_power() {
-                println!("Domain: {:8} Power: {:8.3} W        ", entry.name, power);
+            if let Ok(power) = entry.read_power() {
+                println!("{:<20} {:>10.3}", entry.name, power);
                 printed_line += 1;
             }
         }
 
         sleep(UPDATE_INTERVAL);
-        let cursor_up = "\x1b[A".repeat(printed_line);
+
+        // Move cursor up to overwrite previous output
+        let cursor_up = "\x1b[A".repeat(printed_line + 2); // +2 for header and separator
         print!("{}\r", cursor_up);
     }
 
