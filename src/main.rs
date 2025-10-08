@@ -20,13 +20,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     loop {
         // Print table header
-        println!("{:<20} {:>10} {:>11} {:>11}", "Domain", "Power (W)", "Energy (Wh)", "Avg Pwr (W)");
-        println!("{:-<55}", "");
+        println!("{:<28} {:>10} {:>12} {:>12} {:>12}", "Domain", "Power (W)", "Energy (Wh)", "Avg Pwr (W)", "Max Pwr (W)");
+        println!("{:-<80}", ""); // <-- increased to 80 dashes
 
         let mut printed_line = 0;
         for entry in &mut entries {
             if let Ok(power) = entry.read_power() {
-                println!("{:<20} {:>10.3} {:>11.3} {:>11.3}", entry.name, power, entry.cumulative_energy_wh(), entry.average_power());
+                println!("{:<28} {:>10.3} {:>12.3} {:>12.3} {:>12.3}", entry.name, power, entry.cumulative_energy_wh(), entry.average_power(), entry.max_power());
                 printed_line += 1;
             }
         }

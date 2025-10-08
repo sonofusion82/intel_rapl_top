@@ -1,4 +1,3 @@
-
 use std::fs::read_to_string;
 use std::io;
 use std::path::PathBuf;
@@ -13,6 +12,7 @@ pub struct IntelRapl {
     last_time: std::time::Instant,
     cumulative_energy_uj: u64,
     cumulative_energy_start_time: std::time::Instant,
+    max_power: f64, // Add this field
 }
 
 /// Represents an Intel RAPL (Running Average Power Limit) device, providing methods to read energy and power usage.
@@ -36,7 +36,13 @@ pub struct IntelRapl {
 /// - `cumulative_energy_wh(&self) -> f64`: Returns the cumulative energy consumed in watt-hours since cumulative measurement started.
 impl IntelRapl {
     fn new(path: PathBuf) -> Result<Self, io::Error> {
-        let name = Self::read_name(&path)?;
+        let name_value = Self::read_name(&path)?;
+        // Get only the last component of the parent directory
+        let parent_dir_name = path.file_name()
+            .and_then(|os_str| os_str.to_str())
+            .unwrap_or_default();
+        let name = format!("{}/{}", parent_dir_name, name_value);
+
         let max_energy_range_uj = Self::read_max_energy_range_uj(&path)?;
         let now = std::time::Instant::now();
         Ok(Self {
@@ -47,6 +53,7 @@ impl IntelRapl {
             last_time: now,
             cumulative_energy_uj: 0,
             cumulative_energy_start_time: now,
+            max_power: 0.0, // Initialize
         })
     }
 
@@ -89,6 +96,9 @@ impl IntelRapl {
         self.cumulative_energy_uj += delta_energy;
         self.last_energy = energy_uj;
         self.last_time = updated_time;
+        if power > self.max_power {
+            self.max_power = power;
+        }
         Ok(power)
     }
 
@@ -99,6 +109,11 @@ impl IntelRapl {
 
     pub fn cumulative_energy_wh(&self) -> f64 {
         self.cumulative_energy_uj as f64 * 1e-6 / 3600.0
+    }
+
+    /// Returns the maximum observed power in watts.
+    pub fn max_power(&self) -> f64 {
+        self.max_power
     }
 }
 
